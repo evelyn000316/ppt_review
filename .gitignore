@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# AWS SAM
+.aws-sam/
+samconfig*.toml
+
+# macOS
+.DS_Store
+
+# Environment variables
+.env
+
+# Lambda layers
+*.zip
+layer/
+temp_layer/
+new_layer/
+new_layer2/
+custom-layer/
+
+# Logs
+*.log
+Thumbs.db 

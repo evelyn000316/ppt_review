@@ -1,0 +1,251 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  PPT Review Application
+  包含PPT处理和内容审核功能的无服务器应用
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+  InfraStackName:
+    Type: String
+    Default: ppt-review-infra-dev
+    Description: Name of the infrastructure stack containing S3 and DynamoDB resources
+  StageName:
+    Type: String
+    Default: dev
+    Description: API Gateway stage name
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 512
+    Runtime: python3.9
+    Tracing: Active
+
+Resources:
+  # Lambda Layer
+  DependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub ppt-review-dependencies-${Environment}
+      Description: Dependencies for PPT review functions
+      ContentUri: lambda_layer.zip
+      CompatibleRuntimes:
+        - python3.9
+      RetentionPolicy: Retain
+
+  # API Gateway
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref Environment
+      CorsConfiguration:
+        AllowMethods: ["*"]
+        AllowHeaders: ["*"]
+        AllowOrigins: ["*"]
+        MaxAge: 600
+      StageVariables:
+        MaximumRequestBodySize: '10485760'
+
+  # 内容审核Lambda
+  ContentReviewerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub content-reviewer-${Environment}
+      CodeUri: ./
+      Handler: content_reviewer.lambda_handler
+      Runtime: python3.9
+      Timeout: 900
+      MemorySize: 1024
+      Layers:
+        - !Ref DependenciesLayer
+      Environment:
+        Variables:
+          S3_BUCKET_NAME:
+            Fn::ImportValue: !Sub ${InfraStackName}-PPTBucketName
+          REVIEW_STATUS_TABLE:
+            Fn::ImportValue: !Sub ${InfraStackName}-ReviewStatusTableName
+          BEDROCK_MODEL_ID: anthropic.claude-3-sonnet-20240229-v1:0
+      Policies:
+        - S3CrudPolicy:
+            BucketName:
+              Fn::ImportValue: !Sub ${InfraStackName}-PPTBucketName
+        - DynamoDBCrudPolicy:
+            TableName:
+              Fn::ImportValue: !Sub ${InfraStackName}-ReviewStatusTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:ListFoundationModels
+                - bedrock:GetFoundationModel
+              Resource: '*'
+
+  # PPT处理Lambda
+  PPTProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ppt-processor-${Environment}
+      CodeUri: ./
+      Handler: ppt_processor.lambda_handler
+      Runtime: python3.9
+      Timeout: 900
+      MemorySize: 1024
+      Layers:
+        - !Ref DependenciesLayer
+      Environment:
+        Variables:
+          S3_BUCKET_NAME:
+            Fn::ImportValue: !Sub ${InfraStackName}-PPTBucketName
+          REVIEW_STATUS_TABLE:
+            Fn::ImportValue: !Sub ${InfraStackName}-ReviewStatusTableName
+          CONTENT_REVIEWER_FUNCTION: !GetAtt ContentReviewerFunction.Arn
+      Policies:
+        - S3CrudPolicy:
+            BucketName:
+              Fn::ImportValue: !Sub ${InfraStackName}-PPTBucketName
+        - DynamoDBCrudPolicy:
+            TableName:
+              Fn::ImportValue: !Sub ${InfraStackName}-ReviewStatusTableName
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ContentReviewerFunction
+      Events:
+        UploadApi:
+          Type: HttpApi
+          Properties:
+            Path: /upload
+            Method: POST
+            ApiId: !Ref HttpApi
+        StatusApi:
+          Type: HttpApi
+          Properties:
+            Path: /status
+            Method: GET
+            ApiId: !Ref HttpApi
+
+  PPTProcessorLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: ppt-processor-dependencies
+      Description: Python dependencies for PPT processing
+      ContentUri: ./layer
+      CompatibleRuntimes:
+        - python3.9
+      RetentionPolicy: Retain
+
+  ImageHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: image_handler.lambda_handler
+      MemorySize: 512
+      Timeout: 30
+      Description: 获取S3中的幻灯片图片
+      Environment:
+        Variables:
+          S3_BUCKET_NAME:
+            Fn::ImportValue: !Sub ${InfraStackName}-PPTBucketName
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3ReadPolicy:
+            BucketName: 
+              Fn::ImportValue: !Sub ${InfraStackName}-PPTBucketName
+
+  PPTReviewAPI:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref StageName
+      BinaryMediaTypes:
+        - image/jpeg
+        - image/png
+        - image/gif
+        - application/octet-stream
+        - image/*
+      EndpointConfiguration:
+        Type: REGIONAL
+      DefinitionBody:
+        swagger: '2.0'
+        info:
+          version: '1.0'
+          title: 'PPT Review API'
+        paths:
+          /upload:
+            post:
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PPTProcessorFunction.Arn}/invocations
+              responses:
+                '200':
+                  description: 'Success'
+                '400':
+                  description: 'Bad Request'
+          /status:
+            get:
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PPTProcessorFunction.Arn}/invocations
+              responses:
+                '200':
+                  description: 'Success'
+                '404':
+                  description: 'Not Found'
+          /images:
+            get:
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ImageHandlerFunction.Arn}/invocations
+              responses:
+                '200':
+                  description: 'Success'
+                '404':
+                  description: 'Not Found'
+
+  PPTProcessorApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref PPTProcessorFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PPTReviewAPI}/*/POST/upload
+
+  PPTStatusApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref PPTProcessorFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PPTReviewAPI}/*/GET/status
+
+  ImageHandlerApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ImageHandlerFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PPTReviewAPI}/*/GET/images
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/
+
+  PPTProcessorFunctionArn:
+    Description: ARN of the PPT processor Lambda function
+    Value: !GetAtt PPTProcessorFunction.Arn
+
+  ContentReviewerFunctionArn:
+    Description: ARN of the content reviewer Lambda function
+    Value: !GetAtt ContentReviewerFunction.Arn
+
+  ImageHandlerFunction:
+    Description: "图片处理函数ARN"
+    Value: !GetAtt ImageHandlerFunction.Arn 
