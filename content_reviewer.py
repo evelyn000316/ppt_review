@@ -36,12 +36,6 @@ def invoke_bedrock_model(content_info, custom_prompt=None):
         
         logger.info(f"开始审核内容，类型: {'图片' if is_image else 'PPT'}")
         logger.info(f"内容信息: {json.dumps(content_info, cls=DecimalEncoder)}")
-        
-        # 检查Bedrock模型ID
-        if not BEDROCK_MODEL_ID:
-            error_msg = "未配置Bedrock模型ID"
-            logger.error(error_msg)
-            return {"error": error_msg}
             
         logger.info(f"使用Bedrock模型: {BEDROCK_MODEL_ID}")
         
@@ -81,7 +75,7 @@ def invoke_bedrock_model(content_info, custom_prompt=None):
                         'content': [
                             {
                                 'type': 'text',
-                                'text': custom_prompt if custom_prompt else get_default_prompt(content_info)
+                                'text': get_default_prompt(content_info)
                             },
                             {
                                 'type': 'image',
@@ -106,7 +100,7 @@ def invoke_bedrock_model(content_info, custom_prompt=None):
             messages = [
                 {
                     'role': 'user',
-                    'content': custom_prompt if custom_prompt else get_default_prompt(content_info)
+                    'content': get_default_prompt(content_info)
                 }
             ]
         
@@ -127,6 +121,7 @@ def invoke_bedrock_model(content_info, custom_prompt=None):
                 modelId=BEDROCK_MODEL_ID,
                 body=json.dumps(request_body)
             )
+
             
             # 读取响应
             response_body = json.loads(response['body'].read().decode())
@@ -288,9 +283,6 @@ def get_default_prompt(content_info):
    - 干扰元素检查：是否存在影响观看的水印或干扰
    - 专业性检查：整体效果是否符合专业要求
    - 分辨率检查：图片分辨率是否适合展示用途
-
-内容信息:
-{content_info_str}
 
 ===回复要求===
 1. 必须对每个审核类别的每个子项都给出具体的审核结果
@@ -467,18 +459,6 @@ def lambda_handler(event, context):
         bucket_name = event.get('bucket_name', S3_BUCKET_NAME)
         content_key = event.get('content_key')
         custom_prompt = event.get('custom_prompt')  # 获取自定义提示词
-        
-        if not s3_key or not bucket_name or not content_key:
-            error_msg = "缺少必要的参数: s3_key, bucket_name, content_key"
-            logger.error(error_msg)
-            update_status(s3_key, 'ERROR', {'error': error_msg})
-            return {
-                'statusCode': 400,
-                'body': json.dumps({
-                    'status': 'error',
-                    'message': error_msg
-                }, cls=DecimalEncoder)
-            }
         
         # 更新状态为审核中
         update_status(s3_key, 'REVIEWING')

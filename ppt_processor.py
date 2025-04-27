@@ -41,9 +41,6 @@ ASPOSE_CLIENT_ID = os.environ.get('ASPOSE_CLIENT_ID', '')
 ASPOSE_CLIENT_SECRET = os.environ.get('ASPOSE_CLIENT_SECRET', '')
 ASPOSE_BASE_URL = "https://api.aspose.cloud/v3.0"
 
-# LibreOffice路径
-LIBREOFFICE_PATH = '/opt/lo/instdir/program/soffice'
-
 def lambda_handler(event, context):
     """Lambda处理函数"""
     try:
@@ -63,11 +60,6 @@ def lambda_handler(event, context):
                 return handle_status(event)
             else:
                 return create_response(404, {'error': '未知的请求路径'})
-                
-        # 处理S3事件
-        elif 'Records' in event and event['Records'][0].get('eventSource') == 'aws:s3':
-            process_s3_event(event)
-            return
             
         else:
             return create_response(400, {'error': '未知的事件类型'})
@@ -76,95 +68,12 @@ def lambda_handler(event, context):
         logger.error(f"处理请求时出错: {str(e)}")
         return create_response(500, {'error': str(e)})
 
-def handle_status(event):
-    """处理状态查询请求"""
-    try:
-        logger.info("=================== 状态查询开始 ===================")
-        logger.info(f"完整事件: {json.dumps(event, cls=DecimalEncoder)}")
-        
-        # 获取查询参数
-        if 'queryStringParameters' not in event or not event['queryStringParameters']:
-            logger.error("缺少查询参数")
-            return create_response(400, {
-                'status': 'error',
-                'message': '缺少必要的查询参数'
-            })
-            
-        params = event['queryStringParameters']
-        s3_key = params.get('s3_key')
-        
-        if not s3_key:
-            logger.error("缺少s3_key参数")
-            return create_response(400, {
-                'status': 'error',
-                'message': '缺少必要的s3_key参数'
-            })
-            
-        logger.info(f"查询状态: s3_key={s3_key}")
-        
-        try:
-            # 从DynamoDB获取状态
-            status_data = get_status(s3_key)
-            
-            if not status_data:
-                logger.error(f"未找到状态数据: {s3_key}")
-                return create_response(404, {
-                    'status': 'error',
-                    'message': '未找到指定文件的状态信息'
-                })
-            
-            logger.info("=================== DynamoDB数据 ===================")
-            logger.info(f"原始状态数据: {json.dumps(status_data, cls=DecimalEncoder)}")
-            
-            # 检查results字段
-            if 'results' in status_data:
-                logger.info("=================== 审核结果数据 ===================")
-                if isinstance(status_data['results'], str):
-                    try:
-                        parsed_results = json.loads(status_data['results'])
-                        logger.info("成功解析results字符串")
-                        logger.info(f"解析后的results: {json.dumps(parsed_results, cls=DecimalEncoder)}")
-                    except json.JSONDecodeError as e:
-                        logger.error(f"解析results字符串失败: {str(e)}")
-                        logger.error(f"原始results字符串: {status_data['results']}")
-                else:
-                    logger.info(f"results是对象类型: {type(status_data['results'])}")
-                    logger.info(f"results内容: {json.dumps(status_data['results'], cls=DecimalEncoder)}")
-            
-            # 构建响应
-            response = create_response(200, status_data)
-            logger.info("=================== API响应 ===================")
-            logger.info(f"响应内容: {json.dumps(response, cls=DecimalEncoder)}")
-            logger.info("=================== 状态查询结束 ===================")
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"获取状态信息时出错: {str(e)}")
-            logger.exception("详细错误信息:")
-            return create_response(500, {
-                'status': 'error',
-                'message': f'获取状态信息失败: {str(e)}'
-            })
-            
-    except Exception as e:
-        logger.error(f"处理状态查询请求时出错: {str(e)}")
-        logger.exception("详细错误信息:")
-        return create_response(500, {
-            'status': 'error',
-            'message': f'服务器内部错误: {str(e)}'
-        })
-
 def handle_upload(event):
     """处理文件上传请求"""
     try:
-        if 'body' not in event:
-            return create_response(400, {'error': '缺少请求体'})
             
         # 解析请求体
         body = json.loads(event['body']) if isinstance(event['body'], str) else event['body']
-        if 'file' not in body or 'fileName' not in body:
-            return create_response(400, {'error': '缺少必要参数'})
             
         file_content = body['file']
         file_name = body['fileName'].lower()
@@ -423,141 +332,10 @@ def create_response(status_code, body):
         'body': json.dumps(body, cls=DecimalEncoder)
     }
 
-def handle_review_result(event):
-    """处理审核结果查询请求"""
-    try:
-        logger.info("=================== 审核结果查询开始 ===================")
-        logger.info(f"完整事件: {json.dumps(event, cls=DecimalEncoder)}")
-        
-        # 获取查询参数
-        if 'queryStringParameters' not in event or not event['queryStringParameters']:
-            logger.error("缺少查询参数")
-            return create_response(400, {
-                'status': 'error',
-                'message': '缺少必要的查询参数'
-            })
-            
-        params = event['queryStringParameters']
-        s3_key = params.get('s3_key')
-        
-        if not s3_key:
-            logger.error("缺少s3_key参数")
-            return create_response(400, {
-                'status': 'error',
-                'message': '缺少必要的s3_key参数'
-            })
-            
-        logger.info(f"查询审核结果: s3_key={s3_key}")
-        
-        try:
-            # 从S3获取审核结果
-            response = s3.get_object(
-                Bucket=S3_BUCKET_NAME,
-                Key=f"{s3_key}/review_result.json"
-            )
-            review_result = json.loads(response['Body'].read().decode('utf-8'))
-            
-            logger.info("=================== S3审核结果 ===================")
-            logger.info(f"审核结果: {json.dumps(review_result, cls=DecimalEncoder)}")
-            
-            # 获取DynamoDB中的状态信息
-            status_data = get_status(s3_key)
-            
-            # 合并结果
-            full_result = {
-                'status': 'success',
-                'processing_status': status_data.get('status') if status_data else 'UNKNOWN',
-                'timestamp': status_data.get('timestamp') if status_data else None,
-                'review_result': review_result
-            }
-            
-            logger.info("=================== 完整响应 ===================")
-            logger.info(f"响应内容: {json.dumps(full_result, cls=DecimalEncoder)}")
-            logger.info("=================== 审核结果查询结束 ===================")
-            
-            return create_response(200, full_result)
-            
-        except s3.exceptions.NoSuchKey:
-            logger.error(f"未找到审核结果文件: {s3_key}/review_result.json")
-            return create_response(404, {
-                'status': 'error',
-                'message': '未找到审核结果文件'
-            })
-        except Exception as e:
-            logger.error(f"获取审核结果时出错: {str(e)}")
-            logger.exception("详细错误信息:")
-            return create_response(500, {
-                'status': 'error',
-                'message': f'获取审核结果失败: {str(e)}'
-            })
-            
-    except Exception as e:
-        logger.error(f"处理审核结果查询请求时出错: {str(e)}")
-        logger.exception("详细错误信息:")
-        return create_response(500, {
-            'status': 'error',
-            'message': f'服务器内部错误: {str(e)}'
-        })
-
-def process_s3_event(event):
-    """处理S3事件"""
-    try:
-        # 从S3事件中获取信息
-        for record in event['Records']:
-            bucket_name = record['s3']['bucket']['name']
-            s3_key = record['s3']['object']['key']
-            
-            # 更新状态为处理中
-            update_status(s3_key, 'PROCESSING')
-            
-            # 获取图片信息
-            response = s3.head_object(Bucket=bucket_name, Key=s3_key)
-            image_info = {
-                'file_size': response['ContentLength'],
-                'last_modified': response['LastModified'].isoformat(),
-                'content_type': response.get('ContentType', 'image/jpeg')
-            }
-            
-            # 构建内容信息
-            content_info = {
-                'source_file': s3_key,
-                'file_info': image_info,
-                'content_type': image_info['content_type'],
-                'processing_method': 'direct_image',
-                'timestamp': datetime.now().isoformat()
-            }
-            
-            # 保存内容信息
-            content_key = f"{s3_key}/content_info.json"
-            s3.put_object(
-                Bucket=bucket_name,
-                Key=content_key,
-                Body=json.dumps(content_info, cls=DecimalEncoder),
-                ContentType='application/json'
-            )
-            
-            logger.info(f"已保存内容信息到 {content_key}")
-            
-            # 如果没有设置内容审核函数，直接标记为完成
-            if not CONTENT_REVIEWER_FUNCTION:
-                update_status(s3_key, 'COMPLETED', content_info)
-                logger.info(f"未配置内容审核函数，处理完成: {s3_key}")
-                return
-            
-            # 更新状态为等待审核
-            update_status(s3_key, 'WAITING_REVIEW')
-            
-            logger.info(f"图片处理完成，等待内容审核: {s3_key}")
-            
-    except Exception as e:
-        error_msg = f"处理S3事件时出错: {str(e)}"
-        logger.error(error_msg)
-        if 's3_key' in locals():
-            update_status(s3_key, 'ERROR', {'error': error_msg})
-
 def handle_status(event):
     """处理状态查询请求"""
     try:
+        # 获取查询参数
         if 'queryStringParameters' not in event or not event['queryStringParameters']:
             return create_response(400, {'error': '缺少查询参数'})
             
@@ -565,6 +343,7 @@ def handle_status(event):
         if not s3_key:
             return create_response(400, {'error': '缺少s3_key参数'})
             
+        # 获取状态
         status = get_status(s3_key)
         if not status:
             return create_response(404, {'error': '未找到状态信息'})
@@ -573,4 +352,4 @@ def handle_status(event):
         
     except Exception as e:
         logger.error(f"处理状态查询请求时出错: {str(e)}")
-        return create_response(500, {'error': '处理请求时出错'}) 
+        return create_response(500, {'error': str(e)})
